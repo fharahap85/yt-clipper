@@ -76,7 +76,7 @@ class ManualModePage(ctk.CTkFrame):
                 self.caption_switch = switch
             else:
                 self.hook_switch = switch
-        ctk.CTkLabel(options_frame, text="(Captions & Hook are free — burned from subtitles, no API needed)",
+        ctk.CTkLabel(options_frame, text="(Captions need Whisper API; Hook needs TTS API)",
                      font=ctk.CTkFont(size=9), text_color="gray").pack(anchor="w", padx=12, pady=(0, 8))
 
         # Clips list (scrollable)

@@ -2579,9 +2579,6 @@ Transcript:
                 return
             clip_progress("Adding captions...", current_step, 0)
             
-            # Free captions (SRT) need the highlight to slice timestamps.
-            self._caption_highlight = highlight
-            
             # Use portrait_file (without hook) as audio source for transcription
             audio_source = str(portrait_file) if add_hook else None
             
@@ -3155,70 +3152,53 @@ Transcript:
         # Report TTS character usage
         self.report_tokens(0, 0, 0, len(hook_text))
         
-        # Generate hook audio. If no TTS API is configured, run in free mode:
-        # render the hook text silently (text is already drawn on screen via drawtext).
-        use_free_hook = getattr(self, "use_free_hook", False)
+        # Generate TTS audio
+        try:
+            tts_response = self.tts_client.audio.speech.create(
+                model=self.tts_model,
+                voice="nova",
+                input=hook_text,
+                speed=1.0
+            )
+        except APIConnectionError as e:
+            self.log(f"  ❌ TTS API Connection Error: Could not connect to {self.tts_client.base_url}")
+            raise Exception(f"TTS API connection failed!\n\nCould not connect to: {self.tts_client.base_url}\nError: {e}")
+        except RateLimitError as e:
+            self.log(f"  ❌ TTS API Rate Limit: {e}")
+            raise Exception(f"TTS API rate limit exceeded!\n\nPlease wait a moment and try again.\nDetails: {e}")
+        except APIStatusError as e:
+            self.log(f"  ❌ TTS API Error (HTTP {e.status_code}): {e.message}")
+            self.log(f"     Model: {self.tts_model}, Base URL: {self.tts_client.base_url}")
+            raise Exception(
+                f"TTS (Hook) API Error!\n\n"
+                f"Status: {e.status_code}\n"
+                f"Message: {e.message}\n"
+                f"Model: {self.tts_model}\n"
+                f"Base URL: {self.tts_client.base_url}\n\n"
+                f"Check your Hook Maker API settings."
+            )
+        except Exception as e:
+            self.log(f"  ❌ TTS API Unexpected Error: {type(e).__name__}: {e}")
+            raise Exception(f"TTS (Hook) generation failed!\n\nError: {type(e).__name__}: {e}\nModel: {self.tts_model}")
         
-        if not use_free_hook:
-            try:
-                tts_response = self.tts_client.audio.speech.create(
-                    model=self.tts_model,
-                    voice="nova",
-                    input=hook_text,
-                    speed=1.0
-                )
-            except APIConnectionError as e:
-                self.log(f"  ❌ TTS API Connection Error: Could not connect to {self.tts_client.base_url}")
-                raise Exception(f"TTS API connection failed!\n\nCould not connect to: {self.tts_client.base_url}\nError: {e}")
-            except RateLimitError as e:
-                self.log(f"  ❌ TTS API Rate Limit: {e}")
-                raise Exception(f"TTS API rate limit exceeded!\n\nPlease wait a moment and try again.\nDetails: {e}")
-            except APIStatusError as e:
-                self.log(f"  ❌ TTS API Error (HTTP {e.status_code}): {e.message}")
-                self.log(f"     Model: {self.tts_model}, Base URL: {self.tts_client.base_url}")
-                raise Exception(
-                    f"TTS (Hook) API Error!\n\n"
-                    f"Status: {e.status_code}\n"
-                    f"Message: {e.message}\n"
-                    f"Model: {self.tts_model}\n"
-                    f"Base URL: {self.tts_client.base_url}\n\n"
-                    f"Check your Hook Maker API settings."
-                )
-            except Exception as e:
-                self.log(f"  ❌ TTS API Unexpected Error: {type(e).__name__}: {e}")
-                raise Exception(f"TTS (Hook) generation failed!\n\nError: {type(e).__name__}: {e}\nModel: {self.tts_model}")
-            
-            tts_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False).name
-            with open(tts_file, 'wb') as f:
-                f.write(tts_response.content)
-            
-            # Get TTS duration using ffprobe
-            probe_cmd = [
-                self.ffmpeg_path, "-i", tts_file,
-                "-f", "null", "-"
-            ]
-            result = subprocess.run(probe_cmd, capture_output=True, text=True, creationflags=SUBPROCESS_FLAGS)
-            duration_match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", result.stderr)
-            
-            if duration_match:
-                h, m, s = duration_match.groups()
-                hook_duration = int(h) * 3600 + int(m) * 60 + float(s) + 0.5
-            else:
-                hook_duration = 3.0
+        tts_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False).name
+        with open(tts_file, 'wb') as f:
+            f.write(tts_response.content)
+        
+        # Get TTS duration using ffprobe
+        probe_cmd = [
+            self.ffmpeg_path, "-i", tts_file,
+            "-f", "null", "-"
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, creationflags=SUBPROCESS_FLAGS)
+        duration_match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", result.stderr)
+        
+        if duration_match:
+            h, m, s = duration_match.groups()
+            hook_duration = int(h) * 3600 + int(m) * 60 + float(s) + 0.5
         else:
-            # Free mode: estimate hook duration from word count (~0.45s/word, min 2s)
-            word_count = len(hook_text.split())
-            hook_duration = max(2.0, word_count * 0.45 + 0.5)
-            tts_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False).name
-            # Generate silent audio of the estimated duration
-            silent_cmd = [
-                self.ffmpeg_path, "-y",
-                "-f", "lavfi", "-i", f"aevalsrc=0:d={hook_duration:.2f}",
-                tts_file
-            ]
-            subprocess.run(silent_cmd, capture_output=True, text=True, creationflags=SUBPROCESS_FLAGS)
-            self.log(f"  ⊘ Free hook mode: silent audio, duration {hook_duration:.1f}s")
-
+            hook_duration = 3.0
+        
         # Format hook text: uppercase, split into lines (max 3 words per line for better visibility)
         hook_upper = hook_text.upper()
         words = hook_upper.split()
@@ -3585,127 +3565,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(ass_content)
     
-    def create_ass_from_srt(self, srt_path: str, output_path: str, clip_start: float = 0,
-                            clip_end: float = None, time_offset: float = 0):
-        """Create CapCut-style ASS from a YouTube .srt (free, no Whisper).
-
-        Slices subtitles to [clip_start, clip_end] and adds word-by-word
-        highlighting within each line's time span. All times are shifted by
-        time_offset (hook duration) so captions start after the hook.
-        """
-        import re as _re
-
-        with open(srt_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        pattern = _re.compile(
-            r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\Z)",
-            _re.DOTALL)
-        matches = pattern.findall(content)
-
-        if clip_end is None:
-            clip_end = float("inf")
-
-        # ASS header (same CapCut style as create_ass_subtitle_capcut)
-        ass_content = """[Script Info]
-Title: Auto-generated captions (SRT)
-ScriptType: v4.00+
-WrapStyle: 0
-PlayResX: 1080
-PlayResY: 1920
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,65,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,50,50,400,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-        for _, start, end, text in matches:
-            sub_start = self.parse_timestamp(start)
-            sub_end = self.parse_timestamp(end)
-            if sub_end < clip_start or sub_start > clip_end:
-                continue
-
-            words = [w for w in text.replace("\n", " ").strip().split() if w]
-            if not words:
-                continue
-
-            span = max(sub_end - sub_start, 0.1)
-            per = span / len(words)
-
-            # Build text as chunks of up to 4 words (matches Whisper style)
-            chunk_size = 4
-            for c in range(0, len(words), chunk_size):
-                chunk = words[c:c + chunk_size]
-                if not chunk:
-                    continue
-                # Each word in this chunk gets highlighted sequentially
-                for j, current_word in enumerate(chunk):
-                    w_idx = c + j
-                    w_start = sub_start + w_idx * per + time_offset
-                    w_end = sub_start + (w_idx + 1) * per + time_offset
-                    parts = []
-                    for k, w in enumerate(chunk):
-                        wt = w.strip().upper()
-                        if k == j:
-                            parts.append(f"{{\\c&H00FFFF&}}{wt}{{\\c&HFFFFFF&}}")
-                        else:
-                            parts.append(wt)
-                    line = " ".join(parts)
-                    ass_content += (
-                        f"Dialogue: 0,{self.format_time(w_start)},"
-                        f"{self.format_time(w_end)},Default,,0,0,0,,{line}\n"
-                    )
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(ass_content)
-
-    def add_captions_free(self, input_path: str, output_path: str, highlight: dict,
-                          time_offset: float = 0, progress_callback=None):
-        """Burn captions from the downloaded SRT (free, no API)."""
-        srt_path = getattr(self, "subtitles_path", None)
-        if not srt_path or not os.path.exists(srt_path):
-            self.log("  ⚠ No subtitle file available, skipping captions (free mode)")
-            import shutil
-            shutil.copy(input_path, output_path)
-            return
-
-        if progress_callback:
-            progress_callback(0.2)
-
-        clip_start = self.parse_timestamp(highlight["start_time"])
-        clip_end = self.parse_timestamp(highlight["end_time"])
-
-        ass_file = tempfile.NamedTemporaryFile(mode='w', suffix='.ass', delete=False, encoding='utf-8').name
-        self.create_ass_from_srt(srt_path, ass_file, clip_start, clip_end, time_offset)
-
-        if progress_callback:
-            progress_callback(0.5)
-
-        ass_path_escaped = ass_file.replace('\\', '/').replace(':', '\\:')
-        encoder_args = self.get_video_encoder_args()
-        cmd = [
-            self.ffmpeg_path, "-y",
-            "-i", input_path,
-            "-vf", f"ass='{ass_path_escaped}'",
-            *encoder_args,
-            "-c:a", "copy",
-            output_path
-        ]
-        self.log_ffmpeg_command(cmd, "Burn Captions (SRT/free)")
-        result = self._run_ffmpeg_subprocess(cmd)
-        os.unlink(ass_file)
-
-        if result.returncode != 0:
-            self.log("  Warning: Caption burn failed, copying without captions")
-            import shutil
-            shutil.copy(input_path, output_path)
-
-        if progress_callback:
-            progress_callback(1.0)
-
     def format_time(self, seconds: float) -> str:
         """Convert seconds to ASS time format"""
         hours = int(seconds // 3600)
@@ -4604,18 +4463,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return hook_duration
     
     def add_captions_api_with_progress(self, input_path: str, output_path: str, audio_source: str = None, time_offset: float = 0, progress_callback=None):
-        """Add CapCut-style captions. Uses free SRT captions when a subtitle
-        file is available, otherwise falls back to the Whisper API."""
-        
-        # Free path: burn captions directly from the downloaded YouTube SRT.
-        # The caller passes the highlight dict via self._caption_highlight.
-        srt_path = getattr(self, "subtitles_path", None)
-        if srt_path and os.path.exists(srt_path):
-            highlight = getattr(self, "_caption_highlight", None)
-            if highlight:
-                self.add_captions_free(input_path, output_path, highlight,
-                                       time_offset, progress_callback)
-                return
+        """Add CapCut-style captions using OpenAI Whisper API with progress"""
         
         if progress_callback:
             progress_callback(0.1)
@@ -5029,31 +4877,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Update temp_dir to session-specific temp
         self.temp_dir = session_dir / "_temp"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-
-        # Free captions: download the video's SRT once so captions can be
-        # burned without calling the Whisper API. Skipped if a subtitle file
-        # is already present (e.g. from the AI flow).
-        self.subtitles_path = None
-        srt_candidate = self.temp_dir / f"source.{self.subtitle_language}.srt"
-        if not srt_candidate.exists():
-            # Reuse SRT left by the AI highlight-finding phase (same session).
-            alt = session_dir / "_temp" / f"source.{self.subtitle_language}.srt"
-            if alt.exists():
-                srt_candidate = alt
-        if add_captions and not srt_candidate.exists():
-            try:
-                self.set_progress("Downloading subtitles (free captions)...", 0.02)
-                srt_path, _ = self.download_subtitle_only(url)
-                if srt_path:
-                    # Place it where create_ass_from_srt expects it
-                    import shutil
-                    shutil.copy(srt_path, srt_candidate)
-                    self.subtitles_path = str(srt_candidate)
-                    self.log(f"  ✓ Subtitle ready for free captions: {srt_candidate}")
-            except Exception as e:
-                self.log(f"  ⚠ Subtitle download failed (captions will be skipped): {e}")
-        elif srt_candidate.exists():
-            self.subtitles_path = str(srt_candidate)
         
         # Process each selected clip
         total_clips = len(selected_highlights)

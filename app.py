@@ -1609,13 +1609,6 @@ class YTShortClipperApp(ctk.CTk):
             gpu_settings = self.config.get("gpu_acceleration", {})
             if gpu_settings.get("enabled", False):
                 core.enable_gpu_acceleration(True)
-
-            # Free mode: if Hook Maker has no API key, render hook text silently
-            # (text is already drawn on screen via ffmpeg drawtext).
-            hook_maker = (self.config.get("ai_providers", {}) or {}).get("hook_maker", {})
-            if not hook_maker.get("api_key"):
-                core.use_free_hook = True
-                debug_log("Free hook mode enabled (no Hook Maker API key)")
             
             # Process selected highlights
             # New flow: download sections per clip using URL
