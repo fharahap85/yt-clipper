@@ -2428,6 +2428,142 @@ Transcript:
         
         return valid[:num_clips]
     
+    def find_highlights_free(self, srt_path: str, video_info: dict, num_clips: int) -> list:
+        """Find highlights WITHOUT any AI, using a heuristic over the subtitles.
+
+        Scores candidate clips (58-120s) by speech density and "hook" keywords
+        (questions, exclamations, emphasis words), then returns the top N
+        non-overlapping clips in the same dict shape as find_highlights.
+        """
+        import re as _re
+
+        self.log("[2/4] Finding highlights (FREE heuristic, no AI)...")
+
+        with open(srt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        pattern = _re.compile(
+            r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\Z)",
+            _re.DOTALL)
+        cues = []
+        for _, start, end, text in pattern.findall(content):
+            txt = text.replace("\n", " ").strip()
+            if not txt:
+                continue
+            cues.append({
+                "start": self.parse_timestamp(start),
+                "end": self.parse_timestamp(end),
+                "text": txt,
+                "words": len(txt.split()),
+            })
+
+        if not cues:
+            return []
+
+        # Emphasis / hook keywords (Indonesian + English) that signal engaging moments
+        hook_keywords = [
+            "rahasia", "penting", "jangan", "ternyata", "akhirnya", "pertama", "terakhir",
+            "secret", "important", "don't", "wait", "shocking", "reveal", "truth", "never",
+            "always", "best", "worst", "how to", "why", "mengapa", "bagaimana", "wajib",
+            "salah", "benar", "fakta", "myth", "tips", "trik", "viralkan", "tonton",
+        ]
+
+        MIN_DUR, MAX_DUR = 58, 120
+        TARGET_DUR = 75
+
+        # Build candidate clips by sliding a window over consecutive cues.
+        candidates = []
+        i = 0
+        n = len(cues)
+        while i < n:
+            start_t = cues[i]["start"]
+            end_t = start_t
+            words = 0
+            text_parts = []
+            j = i
+            while j < n:
+                c = cues[j]
+                if c["start"] - start_t > MAX_DUR:
+                    break
+                end_t = c["end"]
+                words += c["words"]
+                text_parts.append(c["text"])
+                if end_t - start_t >= MIN_DUR:
+                    dur = end_t - start_t
+                    # Score: speech density + keyword hits + closeness to target length
+                    low = " ".join(text_parts).lower()
+                    kw_hits = sum(1 for kw in hook_keywords if kw in low)
+                    questions = low.count("?") + low.count(" tapi ") + low.count(" tetapi ")
+                    exclaims = low.count("!") + low.count("!")
+                    speech_density = words / dur if dur > 0 else 0
+                    length_score = 1.0 - abs(dur - TARGET_DUR) / TARGET_DUR
+                    score = (
+                        speech_density * 2.0 +
+                        kw_hits * 1.5 +
+                        questions * 1.0 +
+                        exclaims * 0.5 +
+                        max(0.0, length_score) * 1.0
+                    )
+                    candidates.append({
+                        "start_t": start_t,
+                        "end_t": end_t,
+                        "score": score,
+                        "words": words,
+                        "text": " ".join(text_parts),
+                        "kw_hits": kw_hits,
+                    })
+                j += 1
+            i += 1
+
+        if not candidates:
+            return []
+
+        # Sort by score desc, greedily pick non-overlapping top N
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+        picked = []
+        for c in candidates:
+            if any(not (c["end_t"] <= p["start_t"] or c["start_t"] >= p["end_t"]) for p in picked):
+                continue
+            picked.append(c)
+            if len(picked) >= num_clips:
+                break
+
+        # If we still don't have enough, relax overlap constraint
+        if len(picked) < num_clips:
+            for c in candidates:
+                if c not in picked:
+                    picked.append(c)
+                    if len(picked) >= num_clips:
+                        break
+
+        highlights = []
+        for idx, c in enumerate(picked, 1):
+            start_time = self._sec_to_srt(c["start_t"])
+            end_time = self._sec_to_srt(c["end_t"])
+            snippet = c["text"][:150].strip()
+            title = snippet.split(".")[0][:60] if snippet else f"Clip {idx}"
+            virality = min(10, max(1, int(round(c["score"] + c["kw_hits"]))))
+            highlights.append({
+                "start_time": start_time,
+                "end_time": end_time,
+                "title": title,
+                "description": snippet,
+                "virality_score": virality,
+                "duration_seconds": round(c["end_t"] - c["start_t"], 1),
+            })
+            self.log(f"  ✓ {title} ({c['end_t'] - c['start_t']:.0f}s) [💫 {virality}/10]")
+
+        return highlights
+
+    def _sec_to_srt(self, sec: float) -> str:
+        """Convert seconds to HH:MM:SS,mmm SRT timestamp."""
+        sec = max(0.0, sec)
+        h = int(sec // 3600)
+        m = int((sec % 3600) // 60)
+        s = int(sec % 60)
+        ms = int((sec - int(sec)) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
     def process_clip(self, video_path: str, highlight: dict, index: int, total_clips: int = 1, add_captions: bool = True, add_hook: bool = True, pre_cut: bool = False):
         """Process a single clip: cut, portrait, hook (optional), captions (optional)
         
@@ -4955,9 +5091,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             )
         
         # Step 2: Find highlights
-        self.set_progress("Finding highlights with AI...", 0.5)
-        transcript = self.parse_srt(srt_path)
-        highlights = self.find_highlights(transcript, video_info, num_clips)
+        use_free = getattr(self, "use_free_highlights", False)
+        if use_free:
+            self.set_progress("Finding highlights (free heuristic)...", 0.5)
+            highlights = self.find_highlights_free(srt_path, video_info, num_clips)
+        else:
+            self.set_progress("Finding highlights with AI...", 0.5)
+            transcript = self.parse_srt(srt_path)
+            highlights = self.find_highlights(transcript, video_info, num_clips)
         
         if self.is_cancelled():
             return None
