@@ -114,28 +114,18 @@ class AutoClipperCore:
         if self.ai_providers:
             # Highlight Finder client
             hf_config = self.ai_providers.get("highlight_finder", {})
-            self.highlight_client = OpenAI(
-                api_key=hf_config.get("api_key", ""),
-                base_url=hf_config.get("base_url", "https://api.openai.com/v1")
-            )
             self.model = hf_config.get("model", model)
-            
+            self.highlight_client = self._build_client(hf_config)  # ponytail: None when no key (free mode)
+
             # Caption Maker client (Whisper) — use longer timeout for large audio uploads
             cm_config = self.ai_providers.get("caption_maker", {})
-            self.caption_client = OpenAI(
-                api_key=cm_config.get("api_key", ""),
-                base_url=cm_config.get("base_url", "https://api.openai.com/v1"),
-                timeout=600.0  # 10 minutes for large audio files
-            )
             self.whisper_model = cm_config.get("model", "whisper-1")
-            
+            self.caption_client = self._build_client(cm_config, timeout=600.0)  # ponytail: None when no key
+
             # Hook Maker client (TTS)
             hm_config = self.ai_providers.get("hook_maker", {})
-            self.tts_client = OpenAI(
-                api_key=hm_config.get("api_key", ""),
-                base_url=hm_config.get("base_url", "https://api.openai.com/v1")
-            )
             self.tts_model = hm_config.get("model", tts_model)
+            self.tts_client = self._build_client(hm_config)  # ponytail: None when no key
         else:
             # Fallback to single client (backward compatibility)
             self.highlight_client = client
@@ -181,7 +171,23 @@ class AutoClipperCore:
         # Create temp directory
         self.temp_dir = self.output_dir / "_temp"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    def _build_client(self, provider_config: dict, timeout: float = 60.0):
+        """Build an OpenAI client only when a real API key is present.
+
+        ponytail: empty key => None client, so free mode never constructs a
+        real OpenAI client and never raises 'missing credentials'. Upgrade path:
+        if a provider needs validation, check here.
+        """
+        api_key = (provider_config or {}).get("api_key", "")
+        if not api_key:
+            return None
+        return OpenAI(
+            api_key=api_key,
+            base_url=(provider_config or {}).get("base_url", "https://api.openai.com/v1"),
+            timeout=timeout,
+        )
+
     def enable_gpu_acceleration(self, enabled: bool = True):
         """Enable or disable GPU acceleration for video encoding"""
         self.gpu_enabled = enabled
@@ -1738,13 +1744,25 @@ Transcript:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-            
+
             self.log(f"  ✓ Section downloaded!")
-            
+
         except Exception as e:
             last_error = str(e)
-            self.log(f"  ✗ Section download failed: {last_error[:100]}")
-            raise Exception(f"Failed to download video section!\n\n{last_error}")
+            self.log(f"  ✗ Ranged download failed: {last_error[:100]}")
+            # ponytail: download_ranges pipes through ffmpeg and is brittle on
+            # some streams/cookies. Fall back to full download + ffmpeg cut,
+            # which my manual test proved reliable. Upgrade path: none needed
+            # unless full download is too slow for long videos.
+            self.log(f"  ↳ Falling back to full download + cut...")
+            try:
+                full_path = self._download_full_then_cut(
+                    url, start_time, end_time, output_path,
+                    ydl_opts, ffmpeg_path, cookies_path
+                )
+                return full_path
+            except Exception as e2:
+                raise Exception(f"Failed to download video section!\n\n{last_error}\n\nFallback also failed:\n{e2}")
         
         # Find the actual output file (yt-dlp may add extension)
         output_dir = Path(output_path).parent
@@ -1766,7 +1784,57 @@ Transcript:
             return str(video_candidates[0])
         
         raise Exception(f"Downloaded section file not found at: {output_path}")
-    
+
+    def _download_full_then_cut(self, url: str, start_time: str, end_time: str,
+                                output_path: str, base_opts: dict,
+                                ffmpeg_path: str, cookies_path) -> str:
+        """Fallback: download the whole video then cut the section with ffmpeg.
+
+        Used when the ranged (download_ranges) download fails. Robust across
+        streams where ffmpeg's ranged pipe chokes.
+        """
+        full_opts = dict(base_opts)
+        full_opts.pop('download_ranges', None)
+        full_opts.pop('force_keyframes_at_cuts', None)
+
+        # Output the full video next to the target, then cut into output_path.
+        full_path = str(Path(output_path).with_name(f"_full_{Path(output_path).stem}.mp4"))
+
+        full_opts['outtmpl'] = full_path
+        full_opts['merge_output_format'] = 'mp4'
+
+        with yt_dlp.YoutubeDL(full_opts) as ydl:
+            ydl.download([url])
+
+        if not Path(full_path).exists():
+            raise Exception(f"Full download produced no file at {full_path}")
+
+        # Cut with ffmpeg (copy streams; accurate enough for clips).
+        ff = str(Path(ffmpeg_path)) if ffmpeg_path else "ffmpeg"
+        cut_cmd = [
+            ff, "-y",
+            "-ss", start_time, "-to", end_time,
+            "-i", full_path,
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
+            str(output_path),
+        ]
+        result = self._run_ffmpeg_subprocess(cut_cmd)
+        try:
+            Path(full_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        if result.returncode != 0:
+            raise Exception(
+                f"ffmpeg cut failed (code {result.returncode}):\n"
+                f"{(result.stderr or '')[:300]}"
+            )
+        if not Path(output_path).exists():
+            raise Exception(f"Cut produced no file at {output_path}")
+        self.log(f"  ✓ Section downloaded (full + cut)!")
+        return output_path
+
     def _download_section_subprocess(self, url: str, start_time: str, end_time: str, output_path: str) -> str:
         """Download video section using yt-dlp subprocess (fallback)"""
         self.log(f"  Downloading section {start_time} → {end_time}...")

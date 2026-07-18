@@ -15,6 +15,16 @@ DEBUG_MODE = not getattr(sys, 'frozen', False)
 # Error log file path (will be set by setup_error_logging)
 ERROR_LOG_FILE = None
 
+# ponytail: Windows consoles default to cp1252, which can't encode emoji like
+# U+26A0 / U+2192 used in log output. Reconfigure live streams to UTF-8 with
+# replacement so a stray char never tears down the app (covers both app.py and
+# direct module imports of clipper_core).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError, OSError):
+        pass
+
 
 def setup_error_logging(app_dir: Path):
     """Setup error logging to file

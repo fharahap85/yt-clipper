@@ -42,9 +42,18 @@ from pages.session_browser_page import SessionBrowserPage
 # When built with console=False, sys.stdout and sys.stderr are None
 # This causes 'NoneType' object has no attribute 'flush' errors
 if sys.stdout is None:
-    sys.stdout = open(os.devnull, 'w')
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8', errors='replace')
 if sys.stderr is None:
-    sys.stderr = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8', errors='replace')
+
+# ponytail: Windows consoles default to cp1252, which can't encode emoji like
+# U+26A0 (used in log output). Reconfigure live streams to UTF-8 with
+# replacement so a stray char never tears down the app.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError, OSError):
+        pass
 
 APP_DIR = get_app_dir()
 BUNDLE_DIR = get_bundle_dir()
