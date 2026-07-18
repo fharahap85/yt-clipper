@@ -4752,7 +4752,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 self.add_captions_free(input_path, output_path, highlight,
                                        time_offset, progress_callback)
                 return
-        
+
+        # No subtitle available for free captions. In free mode we skip captions
+        # entirely instead of falling back to the paid Whisper API.
+        if getattr(self, "force_free_mode", False):
+            self.log("  ⚠ No subtitle available — skipping captions (free mode, no Whisper)")
+            import shutil
+            shutil.copy(input_path, output_path)
+            if progress_callback:
+                progress_callback(1.0)
+            return
+
         if progress_callback:
             progress_callback(0.1)
         
@@ -5083,6 +5093,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             return None
         
         if not srt_path:
+            use_free = getattr(self, "use_free_highlights", False)
+            if use_free:
+                # Free mode has no Whisper fallback — tell the user clearly.
+                raise Exception(
+                    f"❌ Video ini tidak punya subtitle bahasa '{self.subtitle_language.upper()}'.\n\n"
+                    "Mode gratis (tanpa AI) butuh subtitle YouTube untuk mencari highlight "
+                    "dan membuat caption.\n\n"
+                    "Solusi:\n"
+                    "1. Pilih video yang memiliki subtitle, atau\n"
+                    "2. Gunakan Manual Mode dan isi timestamp sendiri."
+                )
             raise SubtitleNotFoundError(
                 f"No subtitle available for language: {self.subtitle_language.upper()}",
                 video_path=None,

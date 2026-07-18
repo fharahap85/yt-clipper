@@ -1327,8 +1327,9 @@ class YTShortClipperApp(ctk.CTk):
             # locally from subtitles (no LLM call).
             if not highlight_finder.get("api_key"):
                 core.use_free_highlights = True
+                core.force_free_mode = True
                 debug_log("Free highlight detection enabled (no Highlight Finder API key)")
-
+            
             try:
                 # Call find_highlights_only (returns session data - subtitle only, no video)
                 result = core.find_highlights_only(url, num_clips)
@@ -1622,6 +1623,13 @@ class YTShortClipperApp(ctk.CTk):
             if not hook_maker.get("api_key"):
                 core.use_free_hook = True
                 debug_log("Free hook mode enabled (no Hook Maker API key)")
+
+            # Free mode: if Caption Maker has no API key, never fall back to the
+            # paid Whisper API — skip captions instead when no subtitle exists.
+            caption_maker = (self.config.get("ai_providers", {}) or {}).get("caption_maker", {})
+            if not caption_maker.get("api_key"):
+                core.force_free_mode = True
+                debug_log("Force-free captions enabled (no Caption Maker API key)")
             
             # Process selected highlights
             # New flow: download sections per clip using URL
