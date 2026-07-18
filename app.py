@@ -103,7 +103,6 @@ class YTShortClipperApp(ctk.CTk):
         self.create_api_status_page()
         self.create_lib_status_page()
         self.create_contact_page()
-        self.create_manual_mode_page()
         
         self.show_page("home")
         self.load_config()
@@ -339,11 +338,6 @@ class YTShortClipperApp(ctk.CTk):
             font=ctk.CTkFont(size=10), text_color=("#3B8ED0", "#1F6AA5"), cursor="hand2")
         sessions_link.pack()
         sessions_link.bind("<Button-1>", lambda e: self.show_page("session_browser"))
-
-        manual_link = ctk.CTkLabel(bottom_section, text="✋ Manual Mode (no AI)", 
-            font=ctk.CTkFont(size=10), text_color=("#3B8ED0", "#1F6AA5"), cursor="hand2")
-        manual_link.pack(pady=(2, 0))
-        manual_link.bind("<Button-1>", lambda e: self.show_page("manual_mode"))
         
         # ===== LIB STATUS =====
         self.lib_status_frame = ctk.CTkFrame(page, fg_color="transparent")
@@ -615,15 +609,6 @@ class YTShortClipperApp(ctk.CTk):
             self.container,
             lambda: self.config.get("installation_id", "unknown"),
             lambda: self.show_page("home")
-        )
-
-    def create_manual_mode_page(self):
-        """Create manual mode page (no AI) as embedded frame"""
-        from pages.manual_mode_page import ManualModePage
-        self.pages["manual_mode"] = ManualModePage(
-            self.container,
-            lambda: self.show_page("home"),
-            self.start_manual_processing
         )
     
     def load_config(self):
@@ -1482,28 +1467,6 @@ class YTShortClipperApp(ctk.CTk):
         self.pages["results"].show_results()
         self.show_page("results")
     
-    def start_manual_processing(self, url: str, highlights: list, add_captions: bool = False, add_hook: bool = False):
-        """Manual mode: process user-defined highlights without AI"""
-        from datetime import datetime
-        from pathlib import Path
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        session_dir = Path(OUTPUT_DIR) / "sessions" / timestamp
-        session_dir.mkdir(parents=True, exist_ok=True)
-
-        self.session_data = {
-            "url": url,
-            "video_path": "",
-            "session_dir": str(session_dir),
-            "highlights": highlights,
-            "subtitles_path": "",
-            "video_info": {},
-            "status": "highlights_found",
-            "manual": True
-        }
-
-        self.process_selected_highlights(highlights, add_captions, add_hook)
-
     def process_selected_highlights(self, selected_highlights: list, add_captions: bool = False, add_hook: bool = False):
         """NEW: Phase 2 - Process only selected highlights"""
         if not self.session_data:
