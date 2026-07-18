@@ -80,7 +80,8 @@ class YTShortClipperApp(ctk.CTk):
         
         self.title("YT Short Clipper")
         self.geometry("780x620")
-        self.resizable(False, False)
+        self.minsize(780, 620)
+        self.resizable(True, True)
         
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
