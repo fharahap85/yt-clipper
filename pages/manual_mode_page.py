@@ -90,9 +90,9 @@ class ManualModePage(ctk.CTkFrame):
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
 
-        # Bottom action buttons
+        # Bottom action buttons (pinned to bottom so it's always visible)
         bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
-        bottom_frame.pack(fill="x", padx=20, pady=(0, 10))
+        bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 10))
 
         self.process_btn = ctk.CTkButton(bottom_frame, text="🎬 Process All Clips", height=45,
                                          font=ctk.CTkFont(size=14, weight="bold"),
@@ -101,7 +101,7 @@ class ManualModePage(ctk.CTkFrame):
         self.process_btn.pack(fill="x")
 
         footer = PageFooter(self, self)
-        footer.pack(fill="x", padx=20, pady=(10, 15))
+        footer.pack(side="bottom", fill="x", padx=20, pady=(10, 15))
 
         self._refresh_list()
 
