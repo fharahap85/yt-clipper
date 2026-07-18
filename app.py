@@ -1051,28 +1051,29 @@ class YTShortClipperApp(ctk.CTk):
             try:
                 from openai import OpenAI
                 
-                # Validate Highlight Finder (required for AI mode)
+                # Validate Highlight Finder (required for all processing)
                 ai_providers = self.config.get("ai_providers", {})
                 hf_config = ai_providers.get("highlight_finder", {})
                 hf_api_key = hf_config.get("api_key", "").strip()
                 hf_base_url = hf_config.get("base_url", "https://api.openai.com/v1").strip()
                 hf_model = hf_config.get("model", "").strip()
-
+                
                 if not hf_api_key or not hf_model:
-                    # No Highlight Finder API -> run FREE locally (no AI needed)
-                    self.free_highlights_mode = True
-                    self.after(0, self._start_processing_validated)
+                    self.after(0, lambda: self._on_validation_failed(
+                        "Highlight Finder API is not configured!\n\n" +
+                        "This is required to find viral moments in videos.\n\n" +
+                        "Please configure it in Settings → AI API Settings → Highlight Finder"))
                     return
-
+                
                 # Test Highlight Finder API
                 try:
                     hf_client = OpenAI(api_key=hf_api_key, base_url=hf_base_url)
-
+                    
                     # Try to list models to verify API key and model availability
                     try:
                         hf_models = hf_client.models.list()
                         hf_available = [m.id for m in hf_models.data]
-
+                        
                         if hf_model not in hf_available:
                             self.after(0, lambda: self._on_validation_failed(
                                 f"Highlight Finder model '{hf_model}' is not available!\n\n" +
@@ -1084,7 +1085,7 @@ class YTShortClipperApp(ctk.CTk):
                         # Some providers don't support models.list()
                         # Just verify the API key is not empty and continue
                         pass
-
+                    
                 except Exception as e:
                     self.after(0, lambda: self._on_validation_failed(
                         f"Highlight Finder API validation failed!\n\n" +
@@ -1092,9 +1093,8 @@ class YTShortClipperApp(ctk.CTk):
                         "Please check your configuration in:\n" +
                         "Settings → AI API Settings → Highlight Finder"))
                     return
-
-                # All validations passed, proceed with processing (AI mode)
-                self.free_highlights_mode = False
+                
+                # All validations passed, proceed with processing
                 self.after(0, self._start_processing_validated)
                 
             except Exception as e:
@@ -1322,13 +1322,7 @@ class YTShortClipperApp(ctk.CTk):
                 token_callback=lambda a, b, c, d: self.after(0, lambda: self.update_tokens(a, b, c, d)),
                 cancel_check=lambda: self.cancelled
             )
-
-            # Free mode: if Highlight Finder has no API key, detect highlights
-            # locally from subtitles (no LLM call).
-            if not highlight_finder.get("api_key"):
-                core.use_free_highlights = True
-                debug_log("Free highlight detection enabled (no Highlight Finder API key)")
-
+            
             try:
                 # Call find_highlights_only (returns session data - subtitle only, no video)
                 result = core.find_highlights_only(url, num_clips)
