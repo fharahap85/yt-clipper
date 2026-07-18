@@ -94,10 +94,17 @@ class ManualModePage(ctk.CTkFrame):
         bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
         bottom_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 10))
 
-        self.process_btn = ctk.CTkButton(bottom_frame, text="🎬 Process All Clips", height=45,
-                                         font=ctk.CTkFont(size=14, weight="bold"),
-                                         command=self.process_all,
-                                         fg_color=("#3B8ED0", "#1F6AA5"), hover_color=("#2E7AB8", "#16527D"))
+        self.status_label = ctk.CTkLabel(bottom_frame, text="",
+                                         font=ctk.CTkFont(size=11), text_color="#e74c3c",
+                                         anchor="w", wraplength=720, justify="left")
+        self.status_label.pack(fill="x", pady=(0, 6))
+
+        self.process_btn = ctk.CTkButton(
+            bottom_frame, text="🎬 Process All Clips", height=45,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self.process_all,
+            fg_color=("#3B8ED0", "#1F6AA5"), hover_color=("#2E7AB8", "#16527D")
+        )
         self.process_btn.pack(fill="x")
 
         footer = PageFooter(self, self)
@@ -184,10 +191,12 @@ class ManualModePage(ctk.CTkFrame):
 
     def process_all(self):
         self._collect_clips()
+        self.status_label.configure(text="")
 
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showerror("Missing URL", "Please paste the YouTube URL first.")
+            self.status_label.configure(
+                text="❌ URL YouTube belum diisi. Paste link dulu di kotak YouTube URL.")
             return
 
         valid = []
@@ -195,16 +204,16 @@ class ManualModePage(ctk.CTkFrame):
             start = clip.get("start", "")
             end = clip.get("end", "")
             if not start or not end:
-                messagebox.showerror("Incomplete Clip",
-                                     "Clip #{} is missing start or end time.".format(idx))
+                self.status_label.configure(
+                    text="❌ Clip #{} belum diisi Start atau End (format HH:MM:SS, mis. 00:01:30).".format(idx))
                 return
             if not self._is_valid_ts(start) or not self._is_valid_ts(end):
-                messagebox.showerror("Invalid Time",
-                                     "Clip #{} has an invalid time. Use HH:MM:SS.".format(idx))
+                self.status_label.configure(
+                    text="❌ Clip #{} waktu tidak valid. Pakai format HH:MM:SS (2 digit tiap bagian).".format(idx))
                 return
             if self._to_sec(end) <= self._to_sec(start):
-                messagebox.showerror("Invalid Range",
-                                     "Clip #{} end time must be after start time.".format(idx))
+                self.status_label.configure(
+                    text="❌ Clip #{} End harus lebih besar dari Start.".format(idx))
                 return
             title = clip.get("title") or "Clip {}".format(idx)
             highlight = {
@@ -219,13 +228,21 @@ class ManualModePage(ctk.CTkFrame):
             valid.append(highlight)
 
         if not valid:
-            messagebox.showwarning("No Clips", "Add at least one clip before processing.")
+            self.status_label.configure(text="❌ Belum ada clip. Klik '+ Add Clip' dulu.")
             return
 
         add_captions = self.caption_var.get()
         add_hook = self.hook_var.get()
 
-        self.on_process(url, valid, add_captions, add_hook)
+        self.status_label.configure(
+            text="⏳ Memproses {} clip... (lihat progress di halaman berikutnya)".format(len(valid)),
+            text_color="#27ae60")
+        self.update_idletasks()
+
+        try:
+            self.on_process(url, valid, add_captions, add_hook)
+        except Exception as e:
+            self.status_label.configure(text="❌ Error: {}".format(e), text_color="#e74c3c")
 
     # ---------- helpers ----------
     @staticmethod
